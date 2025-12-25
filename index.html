@@ -524,23 +524,55 @@
             webcamCanvas = document.getElementById('webcam-preview');
             webcamCtx = webcamCanvas.getContext('2d');
             webcamCanvas.width = 160; webcamCanvas.height = 120;
- 
-            const vision = await FilesetResolver.forVisionTasks(
-                "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm"
-            );
-            handLandmarker = await HandLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                    modelAssetPath: `https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task`,
-                    delegate: "GPU"
-                },
-                runningMode: "VIDEO",
-                numHands: 1
-            });
+
+            // 检测是否为 file:// 协议
+            const isFileProtocol = window.location.protocol === 'file:';
+            
+            // 使用当前页面的基础路径来构建本地文件 URL
+            // 获取当前 HTML 文件所在目录的 URL
+            let currentDir = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
+            
+            // 对于 file:// 协议，确保路径格式正确
+            if (isFileProtocol) {
+                // file:// 协议下，路径需要是绝对路径
+                // 移除 file:// 前缀，使用相对路径
+                const pathParts = currentDir.replace(/^file:\/\//, '').split('/');
+                // 保留最后一个非空部分作为目录
+                currentDir = pathParts.slice(0, -1).join('/') + '/';
+                // 如果路径为空，使用当前目录
+                if (!currentDir || currentDir === '/') {
+                    currentDir = './';
+                }
+            }
+            
+            try {
+                const vision = await FilesetResolver.forVisionTasks(
+                    currentDir
+                );
+                handLandmarker = await HandLandmarker.createFromOptions(vision, {
+                    baseOptions: {
+                        modelAssetPath: isFileProtocol 
+                            ? './hand_landmarker.task' 
+                            : new URL('hand_landmarker.task', window.location.href).href,
+                        delegate: "GPU"
+                    },
+                    runningMode: "VIDEO",
+                    numHands: 1
+                });
+            } catch (error) {
+                console.warn('MediaPipe initialization failed:', error);
+                // 如果 MediaPipe 初始化失败，应用仍可继续运行（只是手势识别不可用）
+                handLandmarker = null;
+            }
             
             if (navigator.mediaDevices?.getUserMedia) {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-                video.srcObject = stream;
-                video.addEventListener("loadeddata", predictWebcam);
+                try {
+                    const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    video.srcObject = stream;
+                    video.addEventListener("loadeddata", predictWebcam);
+                } catch (error) {
+                    console.warn('Webcam access failed:', error);
+                }
             }
         }
  
@@ -548,9 +580,14 @@
         async function predictWebcam() {
             if (video.currentTime !== lastVideoTime) {
                 lastVideoTime = video.currentTime;
-                if (handLandmarker) {
-                    const result = handLandmarker.detectForVideo(video, performance.now());
-                    processGestures(result);
+                if (handLandmarker && video.readyState >= 2) {
+                    try {
+                        const result = handLandmarker.detectForVideo(video, performance.now());
+                        processGestures(result);
+                    } catch (error) {
+                        // 静默处理错误，避免中断动画循环
+                        console.warn('Hand detection error:', error);
+                    }
                 }
             }
             requestAnimationFrame(predictWebcam);
@@ -635,5 +672,4 @@
         init();
     </script>
 </body>
-
 </html>
