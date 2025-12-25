@@ -103,7 +103,12 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap');
     </style>
- 
+
+    <!-- 预加载 WASM 文件以加速加载 -->
+    <link rel="preload" href="vision_wasm_internal.wasm" as="fetch" crossorigin="anonymous">
+    <link rel="preload" href="vision_wasm_internal.js" as="script">
+    <link rel="preload" href="hand_landmarker.task" as="fetch" crossorigin="anonymous">
+
     <script type="importmap">
         {
             "imports": {
@@ -195,12 +200,16 @@
             createDefaultPhotos();
             setupPostProcessing();
             setupEvents();
-            await initMediaPipe();
+            
+            // 延迟加载 MediaPipe，不阻塞主界面渲染
+            initMediaPipe().catch(err => {
+                console.warn('MediaPipe 加载失败，但不影响主功能:', err);
+            });
             
             const loader = document.getElementById('loader');
             loader.style.opacity = 0;
             setTimeout(() => loader.remove(), 800);
- 
+
             animate();
         }
  
@@ -520,6 +529,16 @@
  
         // --- MEDIAPIPE ---
         async function initMediaPipe() {
+            // 显示 MediaPipe 加载提示（可选）
+            const loader = document.getElementById('loader');
+            if (loader && loader.style.opacity === '0') {
+                const mediaPipeLoader = document.createElement('div');
+                mediaPipeLoader.id = 'mediapipe-loader';
+                mediaPipeLoader.style.cssText = 'position: fixed; bottom: 20px; right: 20px; color: #d4af37; font-size: 10px; letter-spacing: 2px; z-index: 1000;';
+                mediaPipeLoader.textContent = '正在加载手势识别...';
+                document.body.appendChild(mediaPipeLoader);
+            }
+
             video = document.getElementById('webcam');
             webcamCanvas = document.getElementById('webcam-preview');
             webcamCtx = webcamCanvas.getContext('2d');
@@ -528,41 +547,53 @@
             // 检测是否为 file:// 协议
             const isFileProtocol = window.location.protocol === 'file:';
             
-            // 使用当前页面的基础路径来构建本地文件 URL
             // 获取当前 HTML 文件所在目录的 URL
-            let currentDir = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
-            
-            // 对于 file:// 协议，确保路径格式正确
+            let currentDir;
             if (isFileProtocol) {
-                // file:// 协议下，路径需要是绝对路径
-                // 移除 file:// 前缀，使用相对路径
-                const pathParts = currentDir.replace(/^file:\/\//, '').split('/');
-                // 保留最后一个非空部分作为目录
-                currentDir = pathParts.slice(0, -1).join('/') + '/';
-                // 如果路径为空，使用当前目录
-                if (!currentDir || currentDir === '/') {
-                    currentDir = './';
-                }
+                // file:// 协议下，使用相对路径
+                currentDir = './';
+            } else {
+                // http/https 协议下，使用完整 URL
+                currentDir = window.location.href.substring(0, window.location.href.lastIndexOf('/') + 1);
             }
             
             try {
-                const vision = await FilesetResolver.forVisionTasks(
-                    currentDir
-                );
+                // 优化：使用 Web Workers 或延迟加载 WASM
+                // 先预加载 WASM 文件（如果浏览器支持）
+                if ('serviceWorker' in navigator && !isFileProtocol) {
+                    // 可以在这里添加 Service Worker 缓存逻辑
+                }
+
+                const vision = await FilesetResolver.forVisionTasks(currentDir);
+                const modelPath = isFileProtocol 
+                    ? './hand_landmarker.task' 
+                    : new URL('hand_landmarker.task', window.location.href).href;
+                
                 handLandmarker = await HandLandmarker.createFromOptions(vision, {
                     baseOptions: {
-                        modelAssetPath: isFileProtocol 
-                            ? './hand_landmarker.task' 
-                            : new URL('hand_landmarker.task', window.location.href).href,
+                        modelAssetPath: modelPath,
                         delegate: "GPU"
                     },
                     runningMode: "VIDEO",
                     numHands: 1
                 });
+
+                // 移除加载提示
+                const mediaPipeLoader = document.getElementById('mediapipe-loader');
+                if (mediaPipeLoader) {
+                    mediaPipeLoader.style.opacity = '0';
+                    setTimeout(() => mediaPipeLoader.remove(), 500);
+                }
             } catch (error) {
                 console.warn('MediaPipe initialization failed:', error);
                 // 如果 MediaPipe 初始化失败，应用仍可继续运行（只是手势识别不可用）
                 handLandmarker = null;
+                
+                // 移除加载提示
+                const mediaPipeLoader = document.getElementById('mediapipe-loader');
+                if (mediaPipeLoader) {
+                    mediaPipeLoader.remove();
+                }
             }
             
             if (navigator.mediaDevices?.getUserMedia) {
