@@ -4,6 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Grand Luxury Tree Final v2</title>
+    
+    <!-- DNS 预解析和预连接，加速外部资源加载 -->
+    <link rel="dns-prefetch" href="https://cdn.jsdelivr.net">
+    <link rel="dns-prefetch" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="preconnect" href="https://fonts.googleapis.com" crossorigin>
     <style>
         body { margin: 0; overflow: hidden; background-color: #000000; font-family: 'Times New Roman', serif; }
         #canvas-container { width: 100vw; height: 100vh; position: absolute; top: 0; left: 0; z-index: 1; }
@@ -49,7 +55,9 @@
             letter-spacing: 6px; 
             text-shadow: 0 0 50px rgba(252, 238, 167, 0.6); 
             background: linear-gradient(to bottom, #fff, #eebb66);
-            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
             font-family: 'Cinzel', 'Times New Roman', serif;
             opacity: 0.9;
             transition: opacity 0.5s ease; /* Ensure smooth transitions if needed */
@@ -100,14 +108,14 @@
         }
     </style>
     
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap');
-    </style>
+    <!-- 优化字体加载，使用 font-display: swap 避免阻塞渲染 -->
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;700&display=swap" rel="stylesheet">
 
-    <!-- 预加载 WASM 文件以加速加载 -->
-    <link rel="preload" href="vision_wasm_internal.wasm" as="fetch" crossorigin="anonymous">
-    <link rel="preload" href="vision_wasm_internal.js" as="script">
-    <link rel="preload" href="hand_landmarker.task" as="fetch" crossorigin="anonymous">
+    <!-- 预加载关键资源，设置优先级 -->
+    <link rel="preload" href="vision_wasm_internal.wasm" as="fetch" crossorigin="anonymous" fetchpriority="high">
+    <link rel="preload" href="vision_wasm_internal.js" as="script" fetchpriority="high">
+    <link rel="preload" href="hand_landmarker.task" as="fetch" crossorigin="anonymous" fetchpriority="low">
 
     <script type="importmap">
         {
@@ -190,29 +198,103 @@
         let handLandmarker, video, webcamCanvas, webcamCtx;
         let caneTexture; 
  
+        // 资源加载优化：并行加载关键资源
+        async function preloadCriticalResources() {
+            const resources = [
+                { url: 'vision_wasm_internal.wasm', type: 'fetch' },
+                { url: 'vision_wasm_internal.js', type: 'script' }
+            ];
+            
+            // 并行预加载，不阻塞主流程
+            const preloadPromises = resources.map(resource => {
+                return new Promise((resolve) => {
+                    if (resource.type === 'script') {
+                        const link = document.createElement('link');
+                        link.rel = 'preload';
+                        link.href = resource.url;
+                        link.as = 'script';
+                        link.onload = resolve;
+                        link.onerror = resolve; // 即使失败也继续
+                        document.head.appendChild(link);
+                    } else {
+                        fetch(resource.url, { method: 'HEAD' })
+                            .then(() => resolve())
+                            .catch(() => resolve()); // 即使失败也继续
+                    }
+                });
+            });
+            
+            // 不等待完成，立即返回
+            Promise.all(preloadPromises).catch(() => {});
+        }
+
         async function init() {
+            // 立即开始预加载关键资源
+            preloadCriticalResources();
+            
+            // 使用 requestIdleCallback 优化非关键初始化（如果支持）
+            const initNonCritical = (callback) => {
+                if ('requestIdleCallback' in window) {
+                    requestIdleCallback(callback, { timeout: 2000 });
+                } else {
+                    setTimeout(callback, 0);
+                }
+            };
+            
+            // 关键路径：立即初始化 Three.js 场景
             initThree();
             setupEnvironment(); 
             setupLights();
             createTextures();
-            createParticles(); 
-            createDust();     
-            createDefaultPhotos();
+            
+            // 非关键路径：在空闲时初始化粒子系统
+            initNonCritical(() => {
+                createParticles(); 
+                createDust();     
+                createDefaultPhotos();
+            });
+            
             setupPostProcessing();
             setupEvents();
             
             // 延迟加载 MediaPipe，不阻塞主界面渲染
-            initMediaPipe().catch(err => {
-                console.warn('MediaPipe 加载失败，但不影响主功能:', err);
-            });
+            // 使用更智能的加载策略：在用户交互或空闲时加载
+            const loadMediaPipeWhenReady = () => {
+                if (document.readyState === 'complete') {
+                    initMediaPipe().catch(err => {
+                        console.warn('MediaPipe 加载失败，但不影响主功能:', err);
+                    });
+                } else {
+                    window.addEventListener('load', () => {
+                        // 页面完全加载后再加载 MediaPipe
+                        setTimeout(() => {
+                            initMediaPipe().catch(err => {
+                                console.warn('MediaPipe 加载失败，但不影响主功能:', err);
+                            });
+                        }, 1000); // 延迟1秒，确保主界面已渲染
+                    }, { once: true });
+                }
+            };
+            loadMediaPipeWhenReady();
             
             const loader = document.getElementById('loader');
             loader.style.opacity = 0;
             setTimeout(() => loader.remove(), 800);
 
             animate();
+            
+            // 注册 Service Worker（如果支持且不在本地文件协议）
+            if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
+                navigator.serviceWorker.register('/sw.js')
+                    .then((registration) => {
+                        console.log('Service Worker 注册成功:', registration.scope);
+                    })
+                    .catch((error) => {
+                        console.log('Service Worker 注册失败:', error);
+                    });
+            }
         }
- 
+
         function initThree() {
             const container = document.getElementById('canvas-container');
             scene = new THREE.Scene();
@@ -558,11 +640,9 @@
             }
             
             try {
-                // 优化：使用 Web Workers 或延迟加载 WASM
-                // 先预加载 WASM 文件（如果浏览器支持）
-                if ('serviceWorker' in navigator && !isFileProtocol) {
-                    // 可以在这里添加 Service Worker 缓存逻辑
-                }
+                // 使用 AbortController 实现超时控制
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 30000); // 30秒超时
 
                 const vision = await FilesetResolver.forVisionTasks(currentDir);
                 const modelPath = isFileProtocol 
@@ -578,6 +658,8 @@
                     numHands: 1
                 });
 
+                clearTimeout(timeoutId);
+
                 // 移除加载提示
                 const mediaPipeLoader = document.getElementById('mediapipe-loader');
                 if (mediaPipeLoader) {
@@ -585,7 +667,11 @@
                     setTimeout(() => mediaPipeLoader.remove(), 500);
                 }
             } catch (error) {
-                console.warn('MediaPipe initialization failed:', error);
+                if (error.name === 'AbortError') {
+                    console.warn('MediaPipe 加载超时');
+                } else {
+                    console.warn('MediaPipe initialization failed:', error);
+                }
                 // 如果 MediaPipe 初始化失败，应用仍可继续运行（只是手势识别不可用）
                 handLandmarker = null;
                 

@@ -1,18 +1,27 @@
-# WASM 文件加载优化说明
+# 文件加载效率优化说明
 
 ## 已实施的优化
 
-### 1. 资源预加载
-在 HTML 头部添加了预加载链接，让浏览器提前开始下载 WASM 文件：
-- `vision_wasm_internal.wasm`
-- `vision_wasm_internal.js`
-- `hand_landmarker.task`
+### 1. 资源预加载和优先级
+- 使用 `preload` 和 `fetchpriority` 标记关键资源
+- DNS 预解析（`dns-prefetch`）和预连接（`preconnect`）外部资源
+- 优化字体加载，使用 `font-display: swap` 避免阻塞渲染
 
-### 2. 延迟加载 MediaPipe
-MediaPipe 初始化不再阻塞主界面渲染，应用可以更快显示。
+### 2. 智能加载策略
+- **并行预加载**：关键资源并行加载，不阻塞主流程
+- **延迟加载 MediaPipe**：页面完全加载后再加载，不阻塞主界面渲染
+- **requestIdleCallback**：非关键资源在浏览器空闲时加载
+- **超时控制**：30秒超时保护，避免无限等待
 
-### 3. 加载进度提示
-添加了视觉反馈，让用户知道手势识别功能正在加载。
+### 3. Service Worker 缓存
+- 自动缓存 WASM 文件和模型文件
+- 网络优先策略：优先使用网络，失败时使用缓存
+- 离线支持：即使网络断开也能使用缓存资源
+
+### 4. 代码优化
+- 粒子系统等非关键功能延迟初始化
+- 使用 `requestIdleCallback` 优化非关键任务
+- 资源加载错误处理，确保主功能不受影响
 
 ## GitHub Pages 额外优化建议
 
